@@ -1,0 +1,88 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "abliterator-pro"
+version = "0.1.0"
+description = "AB Pro: architecture-aware activation-direction discovery and reversible weight ablation for open-weight language models."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "AB Pro contributors"}]
+keywords = ["transformers", "interpretability", "activation-steering", "ablation", "cybersecurity"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "accelerate>=0.30",
+  "datasets>=2.19",
+  "safetensors>=0.4.3",
+  "torch>=2.3",
+  "transformers>=4.51,<6",
+]
+
+[project.urls]
+Homepage = "https://github.com/Infinityy7/abliterator-pro"
+Repository = "https://github.com/Infinityy7/abliterator-pro"
+Issues = "https://github.com/Infinityy7/abliterator-pro/issues"
+Changelog = "https://github.com/Infinityy7/abliterator-pro/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/Infinityy7/abliterator-pro#readme"
+
+[project.optional-dependencies]
+bnb = ["bitsandbytes>=0.43.3"]
+fpquant = [
+  "fp-quant>=0.3.2",
+  "transformers>=4.57.2,<6",
+]
+kimi = [
+  "compressed-tensors>=0.15.0",
+  "pillow>=10",
+  "tiktoken>=0.7",
+  "torchvision>=0.18",
+  "transformers>=5.13,<6",
+]
+dev = [
+  "build>=1.2",
+  "mypy>=1.10",
+  "pytest>=8.2",
+  "pytest-cov>=5",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+abpro = "abliterator.cli:main"
+abliterator = "abliterator.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+abliterator = ["data/*.json"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true

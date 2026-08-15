@@ -1,0 +1,6 @@
+# Kept for notebook users. Prefer `pip install -e .`.
+accelerate>=0.30
+datasets>=2.19
+safetensors>=0.4.3
+torch>=2.3
+transformers>=4.51,<6

@@ -1,0 +1,12 @@
+{
+  "layer_path": "model.language_model.layers",
+  "attention_output_patterns": [
+    "self_attn.o_proj"
+  ],
+  "mlp_output_patterns": [
+    "mlp.down_proj",
+    "mlp.experts.*.down_proj",
+    "mlp.shared_experts.down_proj"
+  ],
+  "include_experts": true
+}
