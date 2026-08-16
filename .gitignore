@@ -1,4 +1,7 @@
 
+# Agent tooling / local scratch
+.claude-flow/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -11,7 +14,9 @@ artifacts/
 beta-runs/
 checkpoints/
 reports/
+runs/
 *.safetensors
+*.bin
 *.gguf
 *.ckpt
 *.onnx

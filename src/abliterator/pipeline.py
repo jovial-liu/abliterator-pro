@@ -121,6 +121,7 @@ def save_ablated_checkpoint(
     direction_key: str,
     layers: Iterable[int] | None = None,
     kinds: Iterable[ProjectionKind] = ("attention", "mlp", "expert"),
+    include_input_embeddings: bool = False,
     strength: float = 1.0,
     chunk_columns: int = 8192,
     provenance_warnings: list[str] | None = None,
@@ -146,6 +147,7 @@ def save_ablated_checkpoint(
         direction,
         layers=layers,
         kinds=kinds,
+        include_input_embeddings=include_input_embeddings,
         strength=strength,
         chunk_columns=chunk_columns,
     )

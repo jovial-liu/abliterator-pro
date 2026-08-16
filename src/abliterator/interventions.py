@@ -10,10 +10,10 @@ from copy import copy
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from .adapters.base import ModelAdapter, ProjectionKind
-from .directions import direction_leakage, orthonormalize_directions
+from .adapters.base import ModelAdapter, ProjectionKind, ProjectionTarget
+from .directions import direction_leakage_and_norm, orthonormalize_directions
 from .errors import ArchitectureError, ConfigurationError
-from .quantization import assert_editable_targets
+from .quantization import assert_editable_targets, describe_module_quantization
 from .runtime import require
 
 
@@ -196,6 +196,8 @@ class WeightAblationRecord:
     quantization: str
     leakage_before: float
     leakage_after: float
+    weight_l2_before: float
+    weight_l2_after: float
     strength: float
 
     def to_dict(self) -> dict[str, Any]:
@@ -279,6 +281,46 @@ def _tensor_is_finite_chunked(
     return True
 
 
+def input_embedding_projection_target(adapter: ModelAdapter) -> ProjectionTarget:
+    """Return the dense input-embedding matrix as a residual-output projection target."""
+    model = getattr(adapter, "model", None)
+    getter = getattr(model, "get_input_embeddings", None)
+    if not callable(getter):
+        raise ArchitectureError("The model does not expose input embeddings for projection")
+    module = getter()
+    weight = getattr(module, "weight", None)
+    if weight is None or getattr(weight, "ndim", 0) != 2:
+        raise ArchitectureError("The input embedding does not expose a two-dimensional weight")
+    axes = [axis for axis, size in enumerate(weight.shape) if size == adapter.hidden_size]
+    if len(axes) != 1:
+        raise ArchitectureError(
+            "Could not identify one residual-width axis in the input embedding weight"
+        )
+    checkpoint_quantization = getattr(adapter, "checkpoint_quantization", None)
+    quantization, packed = describe_module_quantization(
+        module,
+        weight,
+        checkpoint_quantization=checkpoint_quantization,
+    )
+    name = "input_embeddings"
+    named_modules = getattr(model, "named_modules", None)
+    if callable(named_modules):
+        for candidate_name, candidate in named_modules():
+            if candidate is module:
+                name = candidate_name or name
+                break
+    return ProjectionTarget(
+        name=name,
+        layer=-1,
+        kind="embedding",
+        weight=weight,
+        output_axis=axes[0],
+        module=module,
+        packed=packed,
+        quantization=quantization,
+    )
+
+
 class WeightAblator:
     def __init__(self, adapter: ModelAdapter) -> None:
         self.adapter = adapter
@@ -289,6 +331,7 @@ class WeightAblator:
         *,
         layers: Iterable[int] | None = None,
         kinds: Iterable[ProjectionKind] = ("attention", "mlp", "expert"),
+        include_input_embeddings: bool = False,
         strength: float = 1.0,
         chunk_columns: int = 8192,
     ) -> list[WeightAblationRecord]:
@@ -297,10 +340,19 @@ class WeightAblator:
         if chunk_columns < 1:
             raise ConfigurationError("chunk_columns must be positive")
         requested_kinds = tuple(kinds)
-        invalid_kinds = sorted(set(requested_kinds) - {"attention", "mlp", "expert"})
+        valid_kinds = {"attention", "mlp", "expert", "embedding"}
+        invalid_kinds = sorted(set(requested_kinds) - valid_kinds)
         if not requested_kinds or invalid_kinds:
             raise ConfigurationError(f"Invalid projection kinds: {invalid_kinds}")
-        targets = self.adapter.projection_targets(layers=layers, kinds=requested_kinds)
+        include_input_embeddings = include_input_embeddings or "embedding" in requested_kinds
+        decoder_kinds = tuple(kind for kind in requested_kinds if kind != "embedding")
+        targets = (
+            self.adapter.projection_targets(layers=layers, kinds=decoder_kinds)
+            if decoder_kinds
+            else []
+        )
+        if include_input_embeddings:
+            targets.append(input_embedding_projection_target(self.adapter))
         if not targets:
             raise ArchitectureError("No eligible output projection matrices were found")
         assert_editable_targets(targets)
@@ -317,7 +369,7 @@ class WeightAblator:
         records: list[WeightAblationRecord] = []
         try:
             for target in targets:
-                before = direction_leakage(
+                before, weight_l2_before = direction_leakage_and_norm(
                     target.weight, q, target.output_axis, chunk_columns=chunk_columns
                 )
                 _project_dense_weight_in_place(
@@ -328,7 +380,7 @@ class WeightAblator:
                     chunk_columns=chunk_columns,
                 )
                 _project_bias_in_place(target.bias, q, strength)
-                after = direction_leakage(
+                after, weight_l2_after = direction_leakage_and_norm(
                     target.weight, q, target.output_axis, chunk_columns=chunk_columns
                 )
                 records.append(
@@ -341,6 +393,8 @@ class WeightAblator:
                         quantization=target.quantization,
                         leakage_before=before,
                         leakage_after=after,
+                        weight_l2_before=weight_l2_before,
+                        weight_l2_after=weight_l2_after,
                         strength=strength,
                     )
                 )

@@ -509,6 +509,26 @@ def test_weight_ablation_handles_linear_and_three_dimensional_experts() -> None:
     assert len(records) == 2
 
 
+def test_weight_ablation_can_remove_direction_from_input_embeddings() -> None:
+    model = FakeModel()
+    adapter = HuggingFaceAdapter(model, FakeTokenizer())
+    direction = torch.tensor([1.0, 0.0, 0.0, 0.0])
+    before = direction_leakage(model.embed.weight, direction, output_axis=1)
+
+    records = WeightAblator(adapter).apply(
+        direction,
+        include_input_embeddings=True,
+        chunk_columns=8,
+    )
+
+    after = direction_leakage(model.embed.weight, direction, output_axis=1)
+    embedding_records = [record for record in records if record.kind == "embedding"]
+    assert before > 1e-4
+    assert after < 1e-6
+    assert len(embedding_records) == 1
+    assert embedding_records[0].output_axis == 1
+
+
 def test_strength_zero_preserves_weights() -> None:
     weight = torch.nn.Parameter(torch.randn(4, 5))
     original = weight.detach().clone()

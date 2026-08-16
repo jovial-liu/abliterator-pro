@@ -41,6 +41,12 @@ from .pipeline import (
 )
 from .quantization import dequantize_model_for_edit, quantize_saved_checkpoint
 from .runtime import require
+from .workflow import (
+    ObliterateConfig,
+    default_obliterated_output,
+    obliteration_plan,
+    run_obliteration_workflow,
+)
 
 QUANTIZATION_CHOICES = ("none", "bnb-fp4", "bnb-nf4", "nvfp4", "mxfp4")
 
@@ -635,6 +641,64 @@ def command_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_obliterate(args: argparse.Namespace) -> int:
+    output = (
+        Path(args.output).expanduser().resolve()
+        if args.output is not None
+        else default_obliterated_output(args.model)
+    )
+    candidate_layers: tuple[int, ...] | str | None
+    if args.candidate_layers == "auto":
+        candidate_layers = "auto"
+    else:
+        parsed_candidates = _parse_layers(args.candidate_layers)
+        candidate_layers = None if parsed_candidates is None else tuple(parsed_candidates)
+    parsed_apply_layers = _parse_layers(args.apply_layers)
+    kinds = tuple(part.strip() for part in args.kinds.split(",") if part.strip())
+    workflow = ObliterateConfig(
+        output=output,
+        objective=args.objective,
+        directions=args.directions,
+        direction_key=args.direction,
+        target_dataset=args.target_dataset,
+        contrast_dataset=args.contrast_dataset,
+        direction_samples=args.direction_samples,
+        ranking_datasets=tuple(args.ranking_dataset or ("jbb-cyber-benign", "jbb-cyber-harmful")),
+        ranking_samples=args.ranking_samples,
+        seed=args.seed,
+        length_match=not args.no_length_match,
+        length_bin=args.length_bin,
+        candidate_layers=candidate_layers,  # type: ignore[arg-type]
+        candidate_count=args.candidate_count,
+        point=args.point,
+        pooling=args.pooling,
+        last_k=args.last_k,
+        batch_size=args.batch_size,
+        max_length=args.max_length,
+        max_new_tokens=args.max_new_tokens,
+        safety_penalty=args.safety_penalty,
+        allow_safety_loss=args.allow_safety_loss,
+        apply_layers=None if parsed_apply_layers is None else tuple(parsed_apply_layers),
+        kinds=kinds,
+        strength=args.strength,
+        chunk_columns=args.chunk_columns,
+        dequantize=args.dequantize,
+    )
+    model_config = _model_config(args)
+    architecture = _architecture(args.architecture)
+    if args.dry_run:
+        _json_print(obliteration_plan(model_config, workflow, architecture))
+        return 0
+    _json_print(
+        run_obliteration_workflow(
+            model_config,
+            architecture,
+            workflow,
+        )
+    )
+    return 0
+
+
 def command_quantize(args: argparse.Namespace) -> int:
     config = QuantizationConfig(
         kind=args.format,
@@ -662,7 +726,12 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tokenizer-revision", help="Revision for a separate tokenizer repo")
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--device-map", default="auto", help="Accelerate device map or 'none'")
-    parser.add_argument("--quantization", choices=QUANTIZATION_CHOICES, default="none")
+    parser.add_argument(
+        "--quantization",
+        choices=QUANTIZATION_CHOICES,
+        default="none",
+        help="Input-loading backend; output quantization is selected separately",
+    )
     parser.add_argument("--compute-dtype", default="bfloat16")
     parser.add_argument("--double-quant", action="store_true")
     parser.add_argument("--keep-master-weights", action="store_true")
@@ -776,6 +845,124 @@ def build_parser() -> argparse.ArgumentParser:
     apply_parser.add_argument("--output-pseudoquantization", action="store_true")
     apply_parser.add_argument("--quantized-output")
     apply_parser.set_defaults(handler=command_apply)
+
+    obliterate = commands.add_parser(
+        "obliterate",
+        aliases=("fork",),
+        help="Discover, validate, and permanently save an ablated model copy in one run",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  abpro obliterate --model /models/Qwen3-4B-Instruct\n"
+            "  abpro fork --model organization/model --output ./model-obliterated\n\n"
+            "Defaults: refusal-removal objective, 40 behavior-confirmed discovery prompts per "
+            "cohort, 10 ranking prompts per JBB cohort, "
+            "three middle-third candidates, strength 1.0, all decoder layers, and "
+            "attention/MLP/expert output sinks. Refusal-removal also verifies the behavior-active "
+            "subspace and input embedding. The result is always a dense checkpoint."
+        ),
+    )
+    _add_model_arguments(obliterate)
+    obliterate.add_argument(
+        "--objective",
+        choices=("refusal-removal", "guarded"),
+        default="refusal-removal",
+        help=(
+            "refusal-removal selects and verifies a permanent zero-refusal replay on the fixed "
+            "harmful cohort; guarded preserves harmful-prompt refusals (default: refusal-removal)"
+        ),
+    )
+    obliterate.add_argument(
+        "--output",
+        help=(
+            "New checkpoint directory; default is a local source sibling or, for a Hub ID, "
+            "the current directory"
+        ),
+    )
+    obliterate.add_argument("--directions", help="Reuse an existing direction artifact")
+    obliterate.add_argument(
+        "--direction",
+        help="Explicit artifact key to validate and apply (requires --directions)",
+    )
+    obliterate.add_argument("--target-dataset", default="cyberseceval-mitre")
+    obliterate.add_argument("--contrast-dataset", default="cyberseceval-frr")
+    obliterate.add_argument(
+        "--direction-samples",
+        type=int,
+        default=40,
+        help="Behavior-confirmed prompts per discovery cohort (default: 40)",
+    )
+    obliterate.add_argument(
+        "--ranking-dataset",
+        action="append",
+        help="Ranking dataset ID; repeat for multiple sources",
+    )
+    obliterate.add_argument(
+        "--ranking-samples",
+        type=int,
+        default=10,
+        help="Prompts per ranking dataset (default: 10)",
+    )
+    obliterate.add_argument("--seed", type=int, default=42)
+    obliterate.add_argument("--length-bin", type=int, default=128)
+    obliterate.add_argument("--no-length-match", action="store_true")
+    obliterate.add_argument(
+        "--candidate-layers",
+        default="auto",
+        help="auto, all, 8:24, or 8,10; auto samples the middle third",
+    )
+    obliterate.add_argument(
+        "--candidate-count",
+        type=int,
+        default=3,
+        help="Automatic middle-third candidate count (default: 3)",
+    )
+    obliterate.add_argument("--point", choices=("resid_pre", "resid_post"), default="resid_pre")
+    obliterate.add_argument("--pooling", choices=("last", "last-k", "mean"), default="last")
+    obliterate.add_argument("--last-k", type=int, default=1)
+    obliterate.add_argument("--batch-size", type=int, default=1)
+    obliterate.add_argument("--max-length", type=int, default=1024)
+    obliterate.add_argument("--max-new-tokens", type=int, default=64)
+    obliterate.add_argument("--safety-penalty", type=float, default=2.0)
+    obliterate.add_argument(
+        "--allow-safety-loss",
+        action="store_true",
+        help=(
+            "Guarded objective only: permit an uninformative baseline or measured "
+            "harmful-refusal loss"
+        ),
+    )
+    obliterate.add_argument(
+        "--apply-layers",
+        default="all",
+        help="Permanent edit layers: all, 8:24, or 8,10 (default: all)",
+    )
+    obliterate.add_argument(
+        "--kinds",
+        default="attention,mlp,expert",
+        help="Permanent output sinks (default: attention,mlp,expert)",
+    )
+    obliterate.add_argument(
+        "--strength",
+        type=float,
+        default=1.0,
+        help="Projection strength in (0,1] (default: 1.0)",
+    )
+    obliterate.add_argument("--chunk-columns", type=int, default=8192)
+    obliterate.add_argument(
+        "--dequantize",
+        action="store_true",
+        help=(
+            "Expand a supported packed input to an approximate dense model before editing; "
+            "a canonical dense source is preferred"
+        ),
+    )
+    obliterate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate paths and print the plan without loading or changing a model",
+    )
+    obliterate.set_defaults(handler=command_obliterate)
 
     quantize = commands.add_parser("quantize", help="Quantize an edited dense checkpoint")
     quantize.add_argument("--source", required=True)

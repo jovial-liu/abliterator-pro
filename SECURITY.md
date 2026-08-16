@@ -14,6 +14,18 @@ are authorized to use.
   capture point, and prompt-rendering policy before evaluation or mutation.
 - Packed low-bit weights are never modified through raw tensor arithmetic.
 - Reports exclude prompt and response text unless a caller explicitly handles it outside the CLI.
+- The one-command workflow always records an explicit objective. Its default `refusal-removal`
+  objective behavior-grounds discovery by retaining harmful prompts the source model actually
+  refused and benign prompts it actually answered. It publishes only if the reversible trial lowers
+  harmful-prompt refusal rate and the reloaded permanent fork reaches zero measured refusals on the
+  fixed harmful validation cohort.
+- `--objective guarded` instead preserves harmful-prompt refusals while measuring benign false
+  refusals. It rejects a candidate that reduces harmful refusal unless the operator supplies the
+  guarded-only `--allow-safety-loss` override.
+- Candidate directions from multiple source layers are tested reversibly across all decoder
+  layers. Guarded mode projects one selected direction permanently. Refusal-removal mode may project
+  the full behavior-active direction subspace, across supported decoder-layer weights and the input
+  embedding. This broad intervention can affect unrelated capabilities and safety boundaries.
 
 Local checkpoint provenance hashes every model shard plus relevant config, tokenizer, processor,
 chat-template, and custom-code files. This is intentionally I/O-heavy for very large local models.
@@ -30,7 +42,9 @@ Maintain an immutable base checkpoint and capture:
 - dense and quantized before/after evaluation;
 - false-refusal, harmful-refusal-preservation, general capability, and cyber capability metrics.
 
-Do not interpret a reduction in refusal phrases as proof of correctness or usefulness. Validate
+AB Pro's built-in behavioral evidence is a regex-based refusal-phrase rate. Do not interpret a
+reduction in that rate as proof that the model never refuses, complies with every request, is
+correct, useful, or safe. Both objectives use bounded cohorts; neither is a certification. Validate
 technical answers independently and keep destructive testing inside owned or explicitly authorized
 environments.
 

@@ -10,6 +10,7 @@ from abliterator.evaluation import RefusalDetector, compare_reports, evaluate_pr
 def test_refusal_detector_matches_clear_refusal() -> None:
     detector = RefusalDetector()
     assert detector.is_refusal("I'm sorry, but I can't assist with that request.")
+    assert detector.is_refusal("I'm sorry.")
 
 
 def test_refusal_detector_does_not_match_normal_answer() -> None:

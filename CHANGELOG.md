@@ -18,3 +18,8 @@
 - Added backend postconditions and separate installation paths for bitsandbytes and FP-Quant.
 - Added Python 3.10–3.12 CI, wheel/CLI smoke tests, Ruff, MyPy, and regression coverage for packed
   FP8/INT4 modules, MoE axes, hook lifecycle, and partial-mutation prevention.
+- Added the objective-explicit `abpro obliterate` (`abpro fork`) one-command workflow with
+  automatic output naming, behavior-grounded discovery, direction/subspace ranking, hidden dense
+  staging, saved-weight leakage verification, post-export behavioral replay, bundled evidence, and
+  atomic final publication. The default objective is refusal-removal; `--objective guarded`
+  preserves harmful-prompt refusals for false-refusal experiments.

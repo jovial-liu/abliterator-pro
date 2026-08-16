@@ -96,6 +96,22 @@ def direction_leakage(
     chunk_columns: int = 8192,
 ) -> float:
     """Return ||QᵀW|| / ||W|| after moving the logical output axis first."""
+    leakage, _ = direction_leakage_and_norm(
+        weight,
+        directions,
+        output_axis=output_axis,
+        chunk_columns=chunk_columns,
+    )
+    return leakage
+
+
+def direction_leakage_and_norm(
+    weight: Any,
+    directions: Any,
+    output_axis: int = 0,
+    chunk_columns: int = 8192,
+) -> tuple[float, float]:
+    """Return direction leakage and the FP32-accumulated L2 norm of a weight."""
     torch = require("torch")
     if chunk_columns < 1:
         raise ConfigurationError("chunk_columns must be positive")
@@ -122,5 +138,8 @@ def direction_leakage(
                 numerator_squared += float(torch.sum(coefficients * coefficients))
                 denominator_squared += float(torch.sum(scratch * scratch))
     if denominator_squared <= 1e-24:
-        return 0.0
-    return float((numerator_squared / denominator_squared) ** 0.5)
+        return 0.0, 0.0
+    return (
+        float((numerator_squared / denominator_squared) ** 0.5),
+        float(denominator_squared**0.5),
+    )

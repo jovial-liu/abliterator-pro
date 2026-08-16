@@ -27,6 +27,26 @@ def test_parser_exposes_expected_commands() -> None:
     assert args.command == "datasets"
 
 
+def test_parser_exposes_one_command_obliteration_with_optional_output() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["obliterate", "--model", "organization/model"])
+    assert args.command == "obliterate"
+    assert args.output is None
+    assert args.candidate_layers == "auto"
+    assert args.direction_samples == 40
+    assert args.ranking_samples == 10
+    assert args.objective == "refusal-removal"
+
+
+def test_obliterate_parser_can_explicitly_select_guarded_objective() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        ["obliterate", "--model", "organization/model", "--objective", "guarded"]
+    )
+
+    assert args.objective == "guarded"
+
+
 def test_apply_validates_quantized_output_before_loading_model(tmp_path) -> None:
     parser = build_parser()
     args = parser.parse_args(

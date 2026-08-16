@@ -10,6 +10,12 @@ from .errors import (
     DependencyError,
     QuantizationError,
 )
+from .workflow import (
+    ObliterateConfig,
+    default_obliterated_output,
+    obliteration_plan,
+    run_obliteration_workflow,
+)
 
 __all__ = [
     "AbliteratorError",
@@ -20,12 +26,16 @@ __all__ = [
     "DependencyError",
     "DirectionArtifact",
     "ModelLoadConfig",
+    "ObliterateConfig",
     "QuantizationConfig",
     "QuantizationError",
     "estimate_directions",
+    "default_obliterated_output",
     "load_direction_artifact",
     "normalize_direction",
+    "obliteration_plan",
     "project_activations",
+    "run_obliteration_workflow",
     "save_direction_artifact",
 ]
 

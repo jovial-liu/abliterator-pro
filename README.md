@@ -33,6 +33,8 @@ experiment is not tied to TransformerLens or one Llama release.
 - Dense-edit → backend-quantize export, with packed-weight mutation blocked.
 - Baseline-versus-intervention false-refusal and refusal-preservation reports.
 - Atomic checkpoint export that never overwrites an existing directory.
+- An objective-explicit `abpro obliterate` / `abpro fork` workflow that discovers, ranks, edits,
+  reload-verifies, evaluates, and publishes a new model copy in one command.
 
 The first real-checkpoint plumbing and behavior smoke test is documented in
 [`docs/QWEN3_4B_BETA.md`](docs/QWEN3_4B_BETA.md).
@@ -95,6 +97,123 @@ pytest
 No large model is downloaded during installation or tests.
 
 ## Workflow
+
+### One command: create a verified fork
+
+For the all-in-one path, point AB Pro at a dense model:
+
+```bash
+abpro obliterate --model /models/Qwen3-4B-Instruct
+```
+
+For a Base checkpoint, intentionally bypass the chat template:
+
+```bash
+abpro obliterate \
+  --model /models/Qwen3-4B-Base \
+  --raw-prompts
+```
+
+Use an aligned Instruct checkpoint when the experiment is meant to measure refusal behavior.
+A Base checkpoint is useful for architecture and numerical plumbing, but it may not contain a
+stable refusal policy; a direction learned there can capture cybersecurity topic or writing style
+instead of a clean refusal feature.
+
+Unless `--output` is supplied, a local source is written to a sibling directory named
+`<source>-obliterated`; a Hub model is written to `<repo-name>-obliterated` in the current
+directory. Existing paths are never overwritten or silently numbered.
+
+The automatic workflow has two explicit objectives:
+
+- `refusal-removal` is the default. It first generates responses from an oversized discovery pool,
+  then fits only on harmful prompts the source model actually refused and benign prompts it actually
+  answered. A candidate is eligible only when a reversible test measures a lower harmful-prompt
+  refusal rate, and the reloaded permanent fork must reach zero measured refusals on the fixed
+  harmful validation cohort before publication.
+- `guarded` preserves harmful-prompt refusals while looking for lower benign false-refusal rates.
+  Select it with `--objective guarded`. Candidates that reduce harmful refusal are rejected unless
+  `--allow-safety-loss` is explicitly supplied; that override applies only to guarded mode.
+
+For example:
+
+```bash
+# Default: behavior-grounded refusal removal
+abpro obliterate --model /models/Qwen3-4B-Instruct
+
+# Safety-preserving false-refusal experiment
+abpro obliterate \
+  --model /models/Qwen3-4B-Instruct \
+  --objective guarded
+```
+
+The command performs the complete workflow:
+
+1. validates the source, output, datasets, architecture, and dense edit support;
+2. forms the discovery cohorts required by the selected objective;
+3. discovers directions at multiple candidate layers across the middle of the decoder;
+4. tests every candidate reversibly by installing its hook across all decoder layers, using the
+   benign and harmful JBB cyber cohorts;
+5. selects a direction or refusal-removal subspace only when it passes the chosen objective's
+   measured criterion;
+6. projects the selected direction/subspace from supported weights across all decoder layers, and
+   in refusal-removal mode also projects the input embedding, then writes the result to a hidden
+   staging checkpoint;
+7. unloads and reloads that checkpoint, repeats a real forward-capture smoke test, matches every
+   edited target, and recomputes direction leakage from the saved weights;
+8. replays the identical validation cohort on the permanent fork; and
+9. bundles the direction, ranking, post-export validation, and run receipt before atomically
+   publishing the final model directory.
+
+Inspect the resolved plan without loading or modifying a model:
+
+```bash
+abpro obliterate --model /models/Qwen3-4B-Instruct --dry-run
+```
+
+Reuse an existing artifact while retaining ranking and post-export verification:
+
+```bash
+abpro obliterate \
+  --model /models/Qwen3-4B-Instruct \
+  --directions artifacts/qwen-cyber-directions.safetensors \
+  --direction layer.18.resid_pre \
+  --output checkpoints/qwen3-4b-obliterated
+```
+
+The automatic command publishes a dense safetensors checkpoint. `--quantization` controls input
+loading and does not select the output format. Use `abpro quantize` afterward for an explicitly
+selected FP4/NF4 backend. Packed inputs still require `--dequantize`; AB Pro never mutates packed
+storage directly, and a dequantized result is an expanded approximation rather than a canonical
+dense source.
+
+Every successful fork contains:
+
+- `abliterator_manifest.json` — the exact permanent target edits;
+- `abpro/direction.safetensors` — the immutable direction snapshot used for the edit;
+- `abpro/ranking.json` — reversible candidate measurements and selection;
+- `abpro/post-export-validation.json` — permanent-fork replay results; and
+- `abpro/run.json` — the complete execution, environment, source, and output receipts.
+
+Local sources receive before/after content receipts; Hub sources rely on their resolved immutable
+revision. Expected fail-closed stops include an existing output path, no safety-preserving
+candidate in guarded mode, no measurable refusal-reducing candidate in refusal-removal mode, a
+nonzero permanent harmful-refusal rate on the fixed validation cohort, an insufficient
+behavior-grounded cohort, a zero-signal baseline, an incompatible artifact, unsupported packed
+storage, or a saved-weight/reload mismatch. A failed post-edit run is not published and reports its
+hidden staging or diagnostic path.
+
+Testing multiple source layers is deliberate: architectures expose the same behavior at different
+depths, and the trials are reversible. Guarded mode permanently applies one selected direction.
+Refusal-removal mode can project the full behavior-active candidate subspace when that is what the
+saved/reloaded checkpoint needs to pass the objective.
+
+The reported behavioral evidence is the before/after refusal-phrase rate from AB Pro's regex
+detector. The word “obliterated” describes the weight projection and objective, not proof that a
+model will answer every possible request. A lower regex rate cannot establish universal
+non-refusal, harmful compliance, correctness, or safety, and the post-export replay validates
+persistence rather than serving as an independent final holdout.
+
+### Expert workflow
 
 ### 1. Inspect the model
 

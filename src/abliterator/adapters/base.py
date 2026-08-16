@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-ProjectionKind = Literal["attention", "mlp", "expert"]
+ProjectionKind = Literal["attention", "mlp", "expert", "embedding"]
 
 
 @dataclass

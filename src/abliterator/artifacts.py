@@ -148,6 +148,7 @@ def validate_direction_artifact_compatibility(
     raw_prompts: bool = False,
     enable_thinking: bool = False,
     allow_mismatch: bool = False,
+    loaded_local_receipt: dict[str, Any] | None = None,
 ) -> list[str]:
     """Fail closed when a direction artifact cannot be tied to the loaded checkpoint."""
     artifact.validate()
@@ -235,7 +236,8 @@ def validate_direction_artifact_compatibility(
             f"{artifact_tokenizer_revision!r}, requested {requested_tokenizer_revision!r}"
         )
 
-    loaded_local_receipt = local_checkpoint_receipt(model)
+    if loaded_local_receipt is None:
+        loaded_local_receipt = local_checkpoint_receipt(model)
     artifact_local_receipt = metadata.get("local_checkpoint_receipt")
     if loaded_local_receipt is not None:
         if not isinstance(artifact_local_receipt, dict):
