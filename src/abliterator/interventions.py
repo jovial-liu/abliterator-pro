@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import math
 from collections.abc import Iterable, Mapping
 from contextlib import AbstractContextManager
@@ -11,7 +10,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from .adapters.base import ModelAdapter, ProjectionKind, ProjectionTarget
-from .directions import direction_leakage_and_norm, orthonormalize_directions
+from .directions import (
+    direction_leakage_and_norm,
+    iter_output_axis_chunks,
+    move_output_axis_front,
+    orthonormalize_directions,
+)
 from .errors import ArchitectureError, ConfigurationError
 from .quantization import assert_editable_targets, describe_module_quantization
 from .runtime import require
@@ -220,26 +224,17 @@ def _project_dense_weight_in_place(
         raise ConfigurationError(
             f"Weight output width {weight.shape[axis]} does not match direction width {q.shape[0]}"
         )
-    moved = torch.movedim(weight, axis, 0)
-    remaining = tuple(moved.shape[1:])
-    if not remaining:
-        remaining = (1,)
-        moved = moved.reshape(moved.shape[0], 1)
-    prefix_ranges = [range(size) for size in remaining[:-1]]
-    prefixes = itertools.product(*prefix_ranges) if prefix_ranges else [()]
+    moved = move_output_axis_front(weight, axis)
     q_device = q.to(device=weight.device, dtype=torch.float32)
     with torch.no_grad():
-        for prefix in prefixes:
-            width = remaining[-1]
-            for start in range(0, width, chunk_columns):
-                index = (slice(None), *prefix, slice(start, min(start + chunk_columns, width)))
-                target = moved[index]
-                scratch = target.float()
-                coefficients = q_device.transpose(0, 1) @ scratch
-                projected = scratch - strength * (q_device @ coefficients)
-                if not torch.isfinite(projected).all():
-                    raise ConfigurationError("Projection produced NaN or infinity")
-                target.copy_(projected.to(dtype=target.dtype))
+        for index in iter_output_axis_chunks(moved, chunk_columns):
+            target = moved[index]
+            scratch = target.float()
+            coefficients = q_device.transpose(0, 1) @ scratch
+            projected = scratch - strength * (q_device @ coefficients)
+            if not torch.isfinite(projected).all():
+                raise ConfigurationError("Projection produced NaN or infinity")
+            target.copy_(projected.to(dtype=target.dtype))
 
 
 def _project_bias_in_place(bias: Any, q: Any, strength: float) -> None:
@@ -262,22 +257,11 @@ def _tensor_is_finite_chunked(
     chunk_columns: int,
 ) -> bool:
     torch = require("torch")
-    moved = torch.movedim(tensor.detach(), output_axis, 0)
-    if moved.ndim == 1:
-        moved = moved.reshape(moved.shape[0], 1)
-    remaining = tuple(moved.shape[1:])
-    prefix_ranges = [range(size) for size in remaining[:-1]]
-    prefixes = itertools.product(*prefix_ranges) if prefix_ranges else [()]
+    moved = move_output_axis_front(tensor.detach(), output_axis)
     with torch.no_grad():
-        for prefix in prefixes:
-            for start in range(0, remaining[-1], chunk_columns):
-                index = (
-                    slice(None),
-                    *prefix,
-                    slice(start, min(start + chunk_columns, remaining[-1])),
-                )
-                if not bool(torch.isfinite(moved[index]).all()):
-                    return False
+        for index in iter_output_axis_chunks(moved, chunk_columns):
+            if not bool(torch.isfinite(moved[index]).all()):
+                return False
     return True
 
 

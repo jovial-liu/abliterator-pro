@@ -4,11 +4,36 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from .errors import ConfigurationError
 from .runtime import require
+
+
+def move_output_axis_front(tensor: Any, output_axis: int) -> Any:
+    """Move the logical output axis to position 0 and flatten scalars to a column."""
+    torch = require("torch")
+    moved = torch.movedim(tensor, output_axis, 0)
+    if moved.ndim == 1:
+        moved = moved.reshape(moved.shape[0], 1)
+    return moved
+
+
+def iter_output_axis_chunks(moved: Any, chunk_columns: int) -> Iterator[tuple[Any, ...]]:
+    """Yield index tuples that walk an axis-fronted tensor in trailing-axis column blocks.
+
+    The yielded index selects the full output axis, one combination of the intermediate
+    axes, and a ``chunk_columns``-wide slice of the trailing axis. Indices share storage
+    with ``moved``, so callers may read or write the selected views.
+    """
+    remaining = tuple(moved.shape[1:])
+    prefix_ranges = [range(size) for size in remaining[:-1]]
+    prefixes = itertools.product(*prefix_ranges) if prefix_ranges else [()]
+    width = remaining[-1]
+    for prefix in prefixes:
+        for start in range(0, width, chunk_columns):
+            yield (slice(None), *prefix, slice(start, min(start + chunk_columns, width)))
 
 
 def normalize_direction(direction: Any, eps: float = 1e-8) -> Any:
@@ -116,27 +141,19 @@ def direction_leakage_and_norm(
     if chunk_columns < 1:
         raise ConfigurationError("chunk_columns must be positive")
     q = orthonormalize_directions(directions).to(device=weight.device, dtype=torch.float32)
-    moved = torch.movedim(weight.detach(), output_axis, 0)
+    moved = move_output_axis_front(weight.detach(), output_axis)
     if moved.shape[0] != q.shape[0]:
         raise ConfigurationError(
             f"Weight output width {moved.shape[0]} does not match direction width {q.shape[0]}"
         )
-    if moved.ndim == 1:
-        moved = moved.reshape(moved.shape[0], 1)
-    remaining = tuple(moved.shape[1:])
-    prefix_ranges = [range(size) for size in remaining[:-1]]
-    prefixes = itertools.product(*prefix_ranges) if prefix_ranges else [()]
     numerator_squared = 0.0
     denominator_squared = 0.0
     with torch.no_grad():
-        for prefix in prefixes:
-            width = remaining[-1]
-            for start in range(0, width, chunk_columns):
-                index = (slice(None), *prefix, slice(start, min(start + chunk_columns, width)))
-                scratch = moved[index].float()
-                coefficients = q.transpose(0, 1) @ scratch
-                numerator_squared += float(torch.sum(coefficients * coefficients))
-                denominator_squared += float(torch.sum(scratch * scratch))
+        for index in iter_output_axis_chunks(moved, chunk_columns):
+            scratch = moved[index].float()
+            coefficients = q.transpose(0, 1) @ scratch
+            numerator_squared += float(torch.sum(coefficients * coefficients))
+            denominator_squared += float(torch.sum(scratch * scratch))
     if denominator_squared <= 1e-24:
         return 0.0, 0.0
     return (
