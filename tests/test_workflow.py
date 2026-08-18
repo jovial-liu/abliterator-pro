@@ -24,6 +24,7 @@ from abliterator.workflow import (
     obliteration_plan,
     run_obliteration_workflow,
     select_ranked_direction,
+    validate_truthfulness_regression,
     verify_reloaded_targets,
 )
 
@@ -378,6 +379,34 @@ def test_permanent_refusal_removal_rejects_a_partial_drop() -> None:
         )
 
 
+def test_truthfulness_regression_guard_rejects_hallucination_increase() -> None:
+    baseline = _truthfulness_evaluation(hallucinated=0)
+    modified = _truthfulness_evaluation(hallucinated=1)
+
+    with pytest.raises(ConfigurationError, match="increased unknowable-question hallucinations"):
+        validate_truthfulness_regression(
+            baseline,
+            modified,
+            max_truthfulness_drop=1.0,
+            max_hallucination_increase=0.0,
+        )
+
+
+def test_truthfulness_regression_guard_allows_stable_truthfulness() -> None:
+    baseline = _truthfulness_evaluation(hallucinated=0)
+    modified = _truthfulness_evaluation(hallucinated=0)
+
+    receipt = validate_truthfulness_regression(
+        baseline,
+        modified,
+        max_truthfulness_drop=0.05,
+        max_hallucination_increase=0.0,
+    )
+
+    assert receipt["passed"] is True
+    assert receipt["unknown_hallucination_increase"] == pytest.approx(0.0)
+
+
 class _TargetAdapter:
     def __init__(self, weight: torch.Tensor) -> None:
         self.weight = weight
@@ -509,7 +538,53 @@ def _evaluation(*, changed: bool = False) -> EvaluationReport:
         unscored_total=0,
         capability_total=0,
         capability_correct=0,
+        truthfulness_total=0,
+        truthfulness_correct=0,
+        unknown_total=0,
+        unknown_hallucinated=0,
         average_response_chars=2.0,
+        results=results,
+    )
+
+
+def _truthfulness_evaluation(*, hallucinated: int) -> EvaluationReport:
+    unknown_hallucinated = bool(hallucinated)
+    results = [
+        ResponseResult(
+            prompt_id="known",
+            source_id="truth",
+            expected_behavior="truthfulness",
+            refused=False,
+            response_chars=5,
+            response_sha256="known",
+            truthfulness_correct=True,
+            hallucinated=None,
+        ),
+        ResponseResult(
+            prompt_id="unknown",
+            source_id="truth",
+            expected_behavior="truthfulness",
+            refused=False,
+            response_chars=5,
+            response_sha256="unknown",
+            truthfulness_correct=not unknown_hallucinated,
+            hallucinated=unknown_hallucinated,
+        ),
+    ]
+    return EvaluationReport(
+        total=2,
+        allow_total=0,
+        allow_refused=0,
+        deny_total=0,
+        deny_refused=0,
+        unscored_total=0,
+        capability_total=0,
+        capability_correct=0,
+        truthfulness_total=2,
+        truthfulness_correct=1 if unknown_hallucinated else 2,
+        unknown_total=1,
+        unknown_hallucinated=1 if unknown_hallucinated else 0,
+        average_response_chars=5.0,
         results=results,
     )
 
@@ -522,6 +597,7 @@ def test_fake_one_command_workflow_verifies_before_atomic_publish(
     source.mkdir()
     output = tmp_path / "source-obliterated"
     events: list[str] = []
+    progress_events: list[tuple[str, str]] = []
     architecture = _architecture()
     adapter = SimpleNamespace(
         model=SimpleNamespace(),
@@ -679,12 +755,14 @@ def test_fake_one_command_workflow_verifies_before_atomic_publish(
             objective="guarded",
             direction_samples=2,
             ranking_samples=1,
+            truthfulness_samples=0,
             candidate_count=1,
             batch_size=1,
             max_length=64,
             max_new_tokens=4,
             kinds=("attention",),
         ),
+        progress=lambda event: progress_events.append((event.stage, event.status)),
     )
 
     assert output.is_dir()
@@ -696,6 +774,28 @@ def test_fake_one_command_workflow_verifies_before_atomic_publish(
     run_receipt = json.loads((output / "abpro" / "run.json").read_text())
     assert run_receipt["output_checkpoint_receipt"]["path"] == "."
     assert run_receipt["output_checkpoint_receipt"]["content_sha256"] == "output-receipt"
+    assert progress_events == [
+        ("preflight", "started"),
+        ("preflight", "completed"),
+        ("cohorts", "started"),
+        ("cohorts", "completed"),
+        ("source", "started"),
+        ("source", "completed"),
+        ("directions", "started"),
+        ("directions", "completed"),
+        ("ranking", "started"),
+        ("ranking", "completed"),
+        ("baseline-quality", "started"),
+        ("baseline-quality", "skipped"),
+        ("edit", "started"),
+        ("edit", "completed"),
+        ("reload", "started"),
+        ("reload", "completed"),
+        ("validation", "started"),
+        ("validation", "completed"),
+        ("publish", "started"),
+        ("publish", "completed"),
+    ]
     assert events == [
         "load-source",
         "smoke-source",

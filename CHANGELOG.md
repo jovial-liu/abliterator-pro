@@ -4,14 +4,13 @@
 
 - Published the bench as AB Pro (Abliterator Pro), with the `abliterator-pro` distribution,
   primary `abpro` command, and `ab_pro` top-level API.
-- Retained the `abliterator` command, import namespace, v1 artifact formats, manifest filenames,
-  and legacy experiment for backward compatibility.
+- Retained the `abliterator` command, import namespace, v1 artifact formats, and manifest
+  filenames for backward compatibility.
 - Replaced the TransformerLens-only notebook-style module with an adapter-based package.
 - Added native Hugging Face residual hooks and dense/MoE output-projection discovery.
 - Added safe direction artifacts, streaming activation statistics, and atomic exports.
 - Added pinned cybersecurity contrast datasets and separated evaluation holdouts.
 - Added explicit bitsandbytes FP4/NF4 and FP-Quant NVFP4/MXFP4 workflows.
-- Preserved the original implementation under `legacy/`.
 - Added fail-closed model/artifact provenance, full local content receipts, strict decoder/sink
   coverage, reversible-hook cleanup, and preflighted atomic exports.
 - Added Qwen3-Next hybrid attention and Kimi K2.5 processor/model-class handling.

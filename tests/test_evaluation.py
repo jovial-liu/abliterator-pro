@@ -28,6 +28,14 @@ class ThinkingChoiceAdapter:
         return ["<think>I will reason privately here.</think>\nB" for _ in prompts]
 
 
+class EchoAdapter:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = responses
+
+    def generate(self, prompts, max_new_tokens, max_length):
+        return self.responses[: len(prompts)]
+
+
 def test_multiple_choice_capability_accuracy() -> None:
     record = PromptRecord(
         id="choice",
@@ -63,6 +71,40 @@ def test_evaluation_validates_batch_size() -> None:
         evaluate_prompts(ChoiceAdapter(), [choice_record("one")], batch_size=0)
 
 
+def test_truthfulness_scores_known_answer_alias() -> None:
+    report = evaluate_prompts(
+        EchoAdapter(["The answer is Paris."]),
+        [truth_record("known", aliases=("Paris",))],
+    )
+
+    assert report.truthfulness_total == 1
+    assert report.truthfulness_accuracy == 1.0
+    assert report.unscored_total == 0
+    assert report.unknown_hallucination_rate is None
+
+
+def test_truthfulness_scores_unknown_hallucination_trap() -> None:
+    report = evaluate_prompts(
+        EchoAdapter(["The secret value is blue-17."]),
+        [truth_record("unknown", must_abstain=True)],
+    )
+
+    assert report.truthfulness_accuracy == 0.0
+    assert report.unknown_total == 1
+    assert report.unknown_hallucinated == 1
+    assert report.unknown_hallucination_rate == 1.0
+
+
+def test_truthfulness_accepts_abstention_for_unknown_trap() -> None:
+    report = evaluate_prompts(
+        EchoAdapter(["I don't know from the information provided."]),
+        [truth_record("unknown", must_abstain=True)],
+    )
+
+    assert report.truthfulness_accuracy == 1.0
+    assert report.unknown_hallucination_rate == 0.0
+
+
 def test_compare_reports_rejects_different_cohorts() -> None:
     first = evaluate_prompts(ChoiceAdapter(), [choice_record("first")])
     second = evaluate_prompts(ChoiceAdapter(), [choice_record("second")])
@@ -88,4 +130,31 @@ def choice_record(identifier: str) -> PromptRecord:
         use_for_direction=False,
         use_for_eval=True,
         reference_answer="B",
+    )
+
+
+def truth_record(
+    identifier: str,
+    *,
+    aliases: tuple[str, ...] = (),
+    must_abstain: bool = False,
+) -> PromptRecord:
+    return PromptRecord(
+        id=identifier,
+        prompt="Answer briefly.",
+        cohort="truthfulness",
+        expected_behavior="truthfulness",
+        domain="general",
+        category=None,
+        source_id="unit",
+        source_revision="abc",
+        source_row_id=identifier,
+        group_id=identifier,
+        license_spdx="MIT",
+        commercial_ok=True,
+        gated=False,
+        use_for_direction=False,
+        use_for_eval=True,
+        answer_aliases=aliases,
+        must_abstain=must_abstain,
     )

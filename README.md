@@ -10,7 +10,6 @@ AB Pro is the public continuation of the Abliterator Bench work. Installations e
 namespace remain available for compatibility with scripts and direction artifacts created by the
 earlier bench.
 
-The original single-file experiment is preserved at [`legacy/abliterator_v0.py`](legacy/abliterator_v0.py).
 The current implementation uses native Hugging Face hooks and architecture inspection so the
 experiment is not tied to TransformerLens or one Llama release.
 
@@ -160,8 +159,10 @@ The command performs the complete workflow:
    staging checkpoint;
 7. unloads and reloads that checkpoint, repeats a real forward-capture smoke test, matches every
    edited target, and recomputes direction leakage from the saved weights;
-8. replays the identical validation cohort on the permanent fork; and
-9. bundles the direction, ranking, post-export validation, and run receipt before atomically
+8. replays the identical validation cohort on the permanent fork;
+9. runs a packaged truthfulness/hallucination regression smoke test, including unknowable prompts
+   where the model should admit missing information; and
+10. bundles the direction, ranking, post-export validation, truthfulness validation, and run receipt before atomically
    publishing the final model directory.
 
 Inspect the resolved plan without loading or modifying a model:
@@ -169,6 +170,26 @@ Inspect the resolved plan without loading or modifying a model:
 ```bash
 abpro obliterate --model /models/Qwen3-4B-Instruct --dry-run
 ```
+
+In an interactive terminal, the one-command workflow now shows ten named stages, including cohort
+loading, source inspection, direction discovery, reversible ranking, permanent editing, reload
+verification, regression checks, and atomic publication. Each completed stage includes elapsed
+time, followed by a short summary with the saved model and receipt paths. The detailed final JSON
+still goes to stdout; progress goes to stderr, so scripts can consume the result unchanged.
+
+```bash
+# Force the readable stage display, including when output is redirected.
+abpro obliterate --model /models/Qwen3-4B-Instruct --progress plain
+
+# Emit machine-readable JSON Lines progress for a desktop or web application.
+abpro obliterate --model /models/Qwen3-4B-Instruct --progress json
+
+# Preserve the earlier silent behavior.
+abpro obliterate --model /models/Qwen3-4B-Instruct --no-progress
+```
+
+`--progress auto` is the default: it shows the readable view in a real terminal and remains quiet
+when stderr is redirected. No progress event contains prompt or generated-response text.
 
 Reuse an existing artifact while retaining ranking and post-export verification:
 
@@ -192,6 +213,8 @@ Every successful fork contains:
 - `abpro/direction.safetensors` — the immutable direction snapshot used for the edit;
 - `abpro/ranking.json` — reversible candidate measurements and selection;
 - `abpro/post-export-validation.json` — permanent-fork replay results; and
+- `abpro/truthfulness-validation.json` — factuality and unknowable-question hallucination
+  regression results, when enabled; and
 - `abpro/run.json` — the complete execution, environment, source, and output receipts.
 
 Local sources receive before/after content receipts; Hub sources rely on their resolved immutable
@@ -199,8 +222,10 @@ revision. Expected fail-closed stops include an existing output path, no safety-
 candidate in guarded mode, no measurable refusal-reducing candidate in refusal-removal mode, a
 nonzero permanent harmful-refusal rate on the fixed validation cohort, an insufficient
 behavior-grounded cohort, a zero-signal baseline, an incompatible artifact, unsupported packed
-storage, or a saved-weight/reload mismatch. A failed post-edit run is not published and reports its
-hidden staging or diagnostic path.
+storage, a saved-weight/reload mismatch, a truthfulness accuracy drop above
+`--max-truthfulness-drop`, or an unknowable-question hallucination increase above
+`--max-hallucination-increase`. A failed post-edit run is not published and reports its hidden
+staging or diagnostic path.
 
 Testing multiple source layers is deliberate: architectures expose the same behavior at different
 depths, and the trials are reversible. Guarded mode permanently applies one selected direction.
@@ -212,6 +237,32 @@ detector. The word “obliterated” describes the weight projection and objecti
 model will answer every possible request. A lower regex rate cannot establish universal
 non-refusal, harmful compliance, correctness, or safety, and the post-export replay validates
 persistence rather than serving as an independent final holdout.
+
+The truthfulness check is a regression tripwire for post-training discipline. It scores simple
+known-answer prompts plus deliberately unknowable prompts and records only row metadata and response
+hashes. It can catch a fork becoming more willing to invent, but it is not a substitute for
+evidence-backed task evaluation, tool-grounded verification, or domain-specific factual review.
+
+### Export to LM Studio and Ollama
+
+AB Pro can package any dense local Hugging Face checkpoint—including a verified AB Pro fork—as a
+portable GGUF. Both applications use the same file; the package also includes an Ollama
+`Modelfile`, a short README, and a source/tool/output hash receipt.
+
+```bash
+abpro export \
+  --model checkpoints/qwen2.5-7b-obliterated \
+  --output checkpoints/qwen2.5-7b-obliterated-gguf \
+  --name qwen2.5-7b-obliterated \
+  --quantization q4_k_m \
+  --llama-cpp-dir ~/Library/Caches/AB-Pro/llama.cpp
+```
+
+`Q4_K_M` is the practical default for a 7B model on a 24 GB Apple Silicon machine. Export never
+edits or deletes the dense checkpoint. It converts to a hidden F16 intermediate, quantizes it,
+checks the GGUF header and source stability, hashes the result, removes the intermediate, and
+atomically publishes a new directory. Use `--keep-intermediate` only when the extra disk usage is
+intentional. See [`docs/GGUF.md`](docs/GGUF.md).
 
 ### Expert workflow
 
@@ -368,7 +419,8 @@ abpro datasets --json
 ```
 
 Direction fitting, ranking, and final evaluation roles are separated. WMDP is a scored final MCQ
-holdout. IFEval and WildGuard remain pinned prompt-only sources because this release does not
+holdout. `truthfulness-smoke` is a packaged scored regression source for factuality and
+unknowable-question hallucination checks. IFEval and WildGuard remain pinned prompt-only sources because this release does not
 implement their official constraint/annotation scorers; the CLI will not mislabel them as scored
 evaluations. See
 [`docs/DATASETS.md`](docs/DATASETS.md).

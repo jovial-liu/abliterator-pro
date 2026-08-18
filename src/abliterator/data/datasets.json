@@ -96,6 +96,25 @@
     "use_for_ranking": false
   },
   {
+    "id": "truthfulness-smoke",
+    "description": "Packaged factuality and unknowable-question smoke test for hallucination regression.",
+    "loader": "package-json",
+    "package_path": "truthfulness_smoke.json",
+    "revision": "truthfulness-smoke-v1",
+    "sha256": "489cc3a874acb8db763266cebbd371a63cea365d46ce154ac82337c9b77b6f84",
+    "text_field": "prompt",
+    "answer_aliases_field": "answer_aliases",
+    "abstain_field": "abstain",
+    "cohort": "general-truthfulness-holdout",
+    "expected_behavior": "truthfulness",
+    "license_spdx": "MIT",
+    "commercial_ok": true,
+    "gated": false,
+    "use_for_direction": false,
+    "use_for_eval": true,
+    "use_for_ranking": false
+  },
+  {
     "id": "ifeval",
     "description": "Google IFEval prompt-only source; built-in constraint scoring is not implemented.",
     "loader": "huggingface",

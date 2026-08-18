@@ -33,6 +33,7 @@ class DatasetSpec:
     use_for_ranking: bool = False
     revision: str | None = None
     url: str | None = None
+    package_path: str | None = None
     sha256: str | None = None
     repo: str | None = None
     config: str | None = None
@@ -41,6 +42,8 @@ class DatasetSpec:
     filters: dict[str, Any] | None = None
     choices_field: str | None = None
     answer_field: str | None = None
+    answer_aliases_field: str | None = None
+    abstain_field: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,8 @@ class PromptRecord:
     use_for_direction: bool
     use_for_eval: bool
     reference_answer: str | None = None
+    answer_aliases: tuple[str, ...] = ()
+    must_abstain: bool = False
 
     def public_metadata(self) -> dict[str, Any]:
         """Metadata safe to log; deliberately excludes prompt text."""
@@ -98,6 +103,8 @@ def load_dataset_records(
     rows: Iterable[dict[str, Any]]
     if spec.loader == "json-url":
         rows = _load_verified_url(spec)
+    elif spec.loader == "package-json":
+        rows = _load_package_json(spec)
     elif spec.loader == "huggingface":
         rows = _load_huggingface(spec, seed=seed)
     else:
@@ -146,6 +153,31 @@ def _load_verified_url(spec: DatasetSpec) -> list[dict[str, Any]]:
     return value
 
 
+def _load_package_json(spec: DatasetSpec) -> list[dict[str, Any]]:
+    if not spec.package_path:
+        raise DatasetError(f"{spec.id} must register package_path")
+    if "/" in spec.package_path or spec.package_path.startswith("."):
+        raise DatasetError(f"{spec.id} has an invalid package_path")
+    data_path = resources.files("abliterator.data").joinpath(spec.package_path)
+    try:
+        payload = data_path.read_bytes()
+    except OSError as exc:
+        raise DatasetError(f"Could not read packaged dataset {spec.id}") from exc
+    if spec.sha256:
+        actual = hashlib.sha256(payload).hexdigest()
+        if actual != spec.sha256:
+            raise DatasetError(
+                f"Checksum mismatch for {spec.id}: expected {spec.sha256}, received {actual}"
+            )
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise DatasetError(f"Packaged dataset {spec.id} is not valid JSON") from exc
+    if not isinstance(value, list):
+        raise DatasetError(f"Packaged dataset {spec.id} must contain a JSON array")
+    return value
+
+
 def _load_huggingface(spec: DatasetSpec, seed: int) -> Iterable[dict[str, Any]]:
     if not spec.repo or not spec.split:
         raise DatasetError(f"{spec.id} must register repo and split")
@@ -176,6 +208,8 @@ def _normalize_rows(spec: DatasetSpec, rows: Iterable[dict[str, Any]]) -> Iterat
                 f"{spec.id} row {index} lacks non-empty text field {spec.text_field!r}"
             )
         reference_answer: str | None = None
+        answer_aliases: tuple[str, ...] = ()
+        must_abstain = False
         if spec.choices_field and spec.answer_field:
             choices = row.get(spec.choices_field)
             answer = row.get(spec.answer_field)
@@ -194,6 +228,29 @@ def _normalize_rows(spec: DatasetSpec, rows: Iterable[dict[str, Any]]) -> Iterat
             )
             prompt = f"{prompt.strip()}\n\n{rendered_choices}\n\nAnswer with only the letter."
             reference_answer = labels[answer]
+        elif spec.answer_aliases_field or spec.abstain_field:
+            aliases_value = (
+                row.get(spec.answer_aliases_field) if spec.answer_aliases_field else None
+            )
+            if aliases_value is None:
+                aliases: list[str] = []
+            elif isinstance(aliases_value, str):
+                aliases = [aliases_value]
+            elif isinstance(aliases_value, list) and all(
+                isinstance(alias, str) for alias in aliases_value
+            ):
+                aliases = aliases_value
+            else:
+                raise DatasetError(f"{spec.id} row {index} has invalid answer aliases")
+            abstain_value = row.get(spec.abstain_field, False) if spec.abstain_field else False
+            if not isinstance(abstain_value, bool):
+                raise DatasetError(f"{spec.id} row {index} has invalid abstain flag")
+            if not aliases and not abstain_value:
+                raise DatasetError(
+                    f"{spec.id} row {index} must have answer aliases or abstain=true"
+                )
+            answer_aliases = tuple(alias.strip() for alias in aliases if alias.strip())
+            must_abstain = abstain_value
         upstream_row_id = row.get("id", row.get("Index", row.get("BehaviorID")))
         row_id = (
             str(upstream_row_id)
@@ -221,6 +278,8 @@ def _normalize_rows(spec: DatasetSpec, rows: Iterable[dict[str, Any]]) -> Iterat
             use_for_direction=spec.use_for_direction,
             use_for_eval=spec.use_for_eval,
             reference_answer=reference_answer,
+            answer_aliases=answer_aliases,
+            must_abstain=must_abstain,
         )
 
 

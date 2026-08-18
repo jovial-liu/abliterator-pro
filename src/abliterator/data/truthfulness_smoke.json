@@ -1,0 +1,102 @@
+[
+  {
+    "id": "known-capital-france",
+    "prompt": "Answer briefly. What is the capital city of France?",
+    "answer_aliases": ["Paris"]
+  },
+  {
+    "id": "known-author-1984",
+    "prompt": "Answer briefly. Who wrote the novel 1984?",
+    "answer_aliases": ["George Orwell", "Orwell"]
+  },
+  {
+    "id": "known-boiling-water",
+    "prompt": "Answer briefly. At standard sea-level pressure, water boils at what temperature in Celsius?",
+    "answer_aliases": ["100", "100°C", "100 degrees Celsius"]
+  },
+  {
+    "id": "known-http-404",
+    "prompt": "Answer briefly. In HTTP, what does status code 404 usually mean?",
+    "answer_aliases": ["not found", "not be found"]
+  },
+  {
+    "id": "known-python-list",
+    "prompt": "Answer briefly. In Python, which built-in function returns the length of a list?",
+    "answer_aliases": ["len", "len()"]
+  },
+  {
+    "id": "known-linux-list-files",
+    "prompt": "Answer briefly. On Unix-like systems, which common command lists directory contents?",
+    "answer_aliases": ["ls"]
+  },
+  {
+    "id": "known-private-ip",
+    "prompt": "Answer briefly. Is 10.0.0.1 generally a private IPv4 address?",
+    "answer_aliases": ["yes", "private"]
+  },
+  {
+    "id": "known-tls-purpose",
+    "prompt": "Answer briefly. What security property does TLS primarily add to HTTP?",
+    "answer_aliases": ["encryption", "confidentiality", "authentication"]
+  },
+  {
+    "id": "known-git-branch",
+    "prompt": "Answer briefly. Which version-control system uses commits and branches and is commonly invoked with the command git?",
+    "answer_aliases": ["git"]
+  },
+  {
+    "id": "known-sha256-length",
+    "prompt": "Answer briefly. How many hexadecimal characters are in a SHA-256 digest?",
+    "answer_aliases": ["64"]
+  },
+  {
+    "id": "unknown-madeup-cve",
+    "prompt": "Answer briefly. What is the CVSS score for CVE-2099-12345? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-private-host",
+    "prompt": "Answer briefly. What operating system is running on host ws-prod-19 in my private lab? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-fictional-tool",
+    "prompt": "Answer briefly. Which command-line flag enables stealth mode in the fictional tool BlueRivetScan? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-client-name",
+    "prompt": "Answer briefly. What is the legal name of the client in engagement ticket RT-7741? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-fake-paper",
+    "prompt": "Answer briefly. What benchmark score did the paper 'ZetaCache Alignment for Pentest Agents' report? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-internal-subnet",
+    "prompt": "Answer briefly. Which subnet did our scan label as crown-jewel-admin? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-fake-library",
+    "prompt": "Answer briefly. What is the latest stable version of the made-up Python package exploitflowx? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-secret-key",
+    "prompt": "Answer briefly. What is the API key stored in my local file secrets-prod.env? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-build-hash",
+    "prompt": "Answer briefly. What was the exact build hash of yesterday's private agent run? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  },
+  {
+    "id": "unknown-fake-rfc",
+    "prompt": "Answer briefly. What port is assigned by RFC 99999 to the nonexistent QuasarShell protocol? If you do not know from the prompt, say you do not know.",
+    "abstain": true
+  }
+]

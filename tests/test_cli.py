@@ -27,6 +27,24 @@ def test_parser_exposes_expected_commands() -> None:
     assert args.command == "datasets"
 
 
+def test_parser_exposes_portable_gguf_export() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "export",
+            "--model",
+            "/models/half-bliterated",
+            "--quantization",
+            "Q4_K_M",
+        ]
+    )
+
+    assert args.command == "export"
+    assert args.gguf_quantization == "q4_k_m"
+    assert args.output is None
+    assert args.context_length == 8192
+
+
 def test_parser_exposes_one_command_obliteration_with_optional_output() -> None:
     parser = build_parser()
     args = parser.parse_args(["obliterate", "--model", "organization/model"])
@@ -36,6 +54,28 @@ def test_parser_exposes_one_command_obliteration_with_optional_output() -> None:
     assert args.direction_samples == 40
     assert args.ranking_samples == 10
     assert args.objective == "refusal-removal"
+    assert args.progress == "auto"
+
+
+def test_obliterate_parser_exposes_plain_json_and_disabled_progress() -> None:
+    parser = build_parser()
+
+    assert (
+        parser.parse_args(
+            ["obliterate", "--model", "organization/model", "--progress", "plain"]
+        ).progress
+        == "plain"
+    )
+    assert (
+        parser.parse_args(
+            ["obliterate", "--model", "organization/model", "--progress", "json"]
+        ).progress
+        == "json"
+    )
+    assert (
+        parser.parse_args(["obliterate", "--model", "organization/model", "--no-progress"]).progress
+        == "off"
+    )
 
 
 def test_obliterate_parser_can_explicitly_select_guarded_objective() -> None:

@@ -6,6 +6,7 @@ from abliterator.datasets import (
     PromptRecord,
     deduplicate_records,
     length_match,
+    load_dataset_records,
     registry,
     stable_partition,
 )
@@ -45,6 +46,15 @@ def test_registry_sources_are_pinned_and_role_separated() -> None:
     assert not specs["wildguard-test"].use_for_eval
     assert not specs["wildguard-test"].commercial_ok
     assert all(spec.revision for spec in specs.values())
+
+
+def test_packaged_truthfulness_smoke_loads_known_and_unknown_rows() -> None:
+    records = load_dataset_records("truthfulness-smoke", seed=123)
+
+    assert len(records) == 20
+    assert all(record.expected_behavior == "truthfulness" for record in records)
+    assert any(record.answer_aliases for record in records)
+    assert any(record.must_abstain for record in records)
 
 
 def test_deduplication_normalizes_case_and_whitespace() -> None:

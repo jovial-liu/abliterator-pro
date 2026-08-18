@@ -30,6 +30,12 @@ from .datasets import (
 )
 from .errors import AbliteratorError, ConfigurationError, DatasetError
 from .evaluation import compare_reports, evaluate_prompts
+from .gguf import (
+    GGUF_QUANTIZATIONS,
+    GgufExportConfig,
+    GgufExportEvent,
+    export_gguf_package,
+)
 from .interventions import ResidualProjector
 from .pipeline import (
     cohort_receipt,
@@ -39,6 +45,7 @@ from .pipeline import (
     select_direction,
     write_direction_artifact,
 )
+from .progress import JsonProgressRenderer, PlainProgressRenderer
 from .quantization import dequantize_model_for_edit, quantize_saved_checkpoint
 from .runtime import require
 from .workflow import (
@@ -665,6 +672,10 @@ def command_obliterate(args: argparse.Namespace) -> int:
         direction_samples=args.direction_samples,
         ranking_datasets=tuple(args.ranking_dataset or ("jbb-cyber-benign", "jbb-cyber-harmful")),
         ranking_samples=args.ranking_samples,
+        truthfulness_datasets=tuple(args.truthfulness_dataset or ("truthfulness-smoke",)),
+        truthfulness_samples=0 if args.no_truthfulness_check else args.truthfulness_samples,
+        max_truthfulness_drop=args.max_truthfulness_drop,
+        max_hallucination_increase=args.max_hallucination_increase,
         seed=args.seed,
         length_match=not args.no_length_match,
         length_bin=args.length_bin,
@@ -686,16 +697,31 @@ def command_obliterate(args: argparse.Namespace) -> int:
     )
     model_config = _model_config(args)
     architecture = _architecture(args.architecture)
+    plan = obliteration_plan(model_config, workflow, architecture)
+    progress_mode = args.progress
+    if progress_mode == "auto":
+        progress_mode = "plain" if sys.stderr.isatty() else "off"
+    progress_renderer: PlainProgressRenderer | JsonProgressRenderer | None
+    if progress_mode == "plain":
+        progress_renderer = PlainProgressRenderer(sys.stderr)
+    elif progress_mode == "json":
+        progress_renderer = JsonProgressRenderer(sys.stderr)
+    else:
+        progress_renderer = None
+    if progress_renderer is not None:
+        progress_renderer.show_plan(plan, dry_run=args.dry_run)
     if args.dry_run:
-        _json_print(obliteration_plan(model_config, workflow, architecture))
+        _json_print(plan)
         return 0
-    _json_print(
-        run_obliteration_workflow(
-            model_config,
-            architecture,
-            workflow,
-        )
+    result = run_obliteration_workflow(
+        model_config,
+        architecture,
+        workflow,
+        progress=None if progress_renderer is None else progress_renderer,
     )
+    if progress_renderer is not None:
+        progress_renderer.show_result(result)
+    _json_print(result)
     return 0
 
 
@@ -716,6 +742,69 @@ def command_quantize(args: argparse.Namespace) -> int:
         model_class=args.model_class,
     )
     _json_print(asdict(manifest))
+    return 0
+
+
+def command_export_gguf(args: argparse.Namespace) -> int:
+    source = Path(args.model).expanduser().resolve()
+    output = (
+        Path(args.output).expanduser().resolve()
+        if args.output is not None
+        else source.parent / f"{source.name}-gguf"
+    )
+    progress_mode = args.progress
+    if progress_mode == "auto":
+        progress_mode = "plain" if sys.stderr.isatty() else "off"
+
+    def progress(event: GgufExportEvent) -> None:
+        if progress_mode == "json":
+            print(
+                json.dumps({"type": "gguf-progress", **event.to_dict()}, sort_keys=True),
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        marker = {
+            "started": "...",
+            "completed": "done",
+            "skipped": "skip",
+            "failed": "FAIL",
+        }[event.status]
+        print(
+            f"[{event.index}/{event.total}] {marker:>4}  {event.message}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    if progress_mode == "plain":
+        print("AB Pro · GGUF application export", file=sys.stderr)
+        print(f"  Source:       {source}", file=sys.stderr)
+        print(f"  Output:       {output}", file=sys.stderr)
+        print(f"  Quantization: {args.gguf_quantization.upper()}", file=sys.stderr)
+        print("  Targets:      LM Studio + Ollama", file=sys.stderr)
+        print(file=sys.stderr)
+    result = export_gguf_package(
+        GgufExportConfig(
+            source=source,
+            output=output,
+            quantization=args.gguf_quantization,
+            model_name=args.name,
+            llama_cpp_dir=args.llama_cpp_dir,
+            python_executable=args.python_executable,
+            context_length=args.context_length,
+            keep_intermediate=args.keep_intermediate,
+            keep_partial=args.keep_partial,
+        ),
+        progress=None if progress_mode == "off" else progress,
+    )
+    if progress_mode == "plain":
+        print(file=sys.stderr)
+        print("AB Pro · GGUF export complete", file=sys.stderr)
+        print(f"  GGUF:       {result['gguf']}", file=sys.stderr)
+        print(f"  Size:       {result['bytes'] / (1024**3):.2f} GiB", file=sys.stderr)
+        print(f"  Modelfile:  {result['modelfile']}", file=sys.stderr)
+        print(f"  Receipt:    {result['receipt']}", file=sys.stderr)
+    _json_print(result)
     return 0
 
 
@@ -903,6 +992,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Prompts per ranking dataset (default: 10)",
     )
+    obliterate.add_argument(
+        "--truthfulness-dataset",
+        action="append",
+        help="Truthfulness regression dataset ID; repeat for multiple sources",
+    )
+    obliterate.add_argument(
+        "--truthfulness-samples",
+        type=int,
+        default=20,
+        help="Prompts per truthfulness dataset (default: 20)",
+    )
+    obliterate.add_argument(
+        "--max-truthfulness-drop",
+        type=float,
+        default=0.05,
+        help="Maximum allowed truthfulness accuracy drop before publication fails (default: 0.05)",
+    )
+    obliterate.add_argument(
+        "--max-hallucination-increase",
+        type=float,
+        default=0.0,
+        help=(
+            "Maximum allowed increase in unknowable-question hallucination rate before "
+            "publication fails (default: 0.0)"
+        ),
+    )
+    obliterate.add_argument(
+        "--no-truthfulness-check",
+        action="store_true",
+        help="Skip the packaged truthfulness/hallucination regression gate",
+    )
     obliterate.add_argument("--seed", type=int, default=42)
     obliterate.add_argument("--length-bin", type=int, default=128)
     obliterate.add_argument("--no-length-match", action="store_true")
@@ -962,6 +1082,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Validate paths and print the plan without loading or changing a model",
     )
+    obliterate.add_argument(
+        "--progress",
+        choices=("auto", "plain", "json", "off"),
+        default="auto",
+        help=(
+            "Progress display on stderr: auto uses plain text in a terminal, json emits "
+            "JSON Lines, and off stays silent (default: auto)"
+        ),
+    )
+    obliterate.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_const",
+        const="off",
+        help="Alias for --progress off",
+    )
     obliterate.set_defaults(handler=command_obliterate)
 
     quantize = commands.add_parser("quantize", help="Quantize an edited dense checkpoint")
@@ -978,6 +1114,70 @@ def build_parser() -> argparse.ArgumentParser:
         "--model-class", choices=("causal-lm", "image-text-to-text"), default="causal-lm"
     )
     quantize.set_defaults(handler=command_quantize)
+
+    export = commands.add_parser(
+        "export",
+        aliases=("gguf",),
+        help="Package a dense local checkpoint as GGUF for LM Studio and Ollama",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Example:\n"
+            "  abpro export --model checkpoints/my-model --quantization q4_k_m\n\n"
+            "The output is a new directory containing one GGUF file, an Ollama Modelfile, "
+            "a README, and a provenance receipt. LM Studio and Ollama use the same GGUF."
+        ),
+    )
+    export.add_argument(
+        "--model",
+        "--source",
+        dest="model",
+        required=True,
+        help="Local dense Hugging Face checkpoint directory",
+    )
+    export.add_argument(
+        "--output",
+        help="New package directory (default: <model>-gguf beside the source)",
+    )
+    export.add_argument("--name", help="Portable model/file name (default: source directory name)")
+    export.add_argument(
+        "--quantization",
+        dest="gguf_quantization",
+        type=str.lower,
+        choices=GGUF_QUANTIZATIONS,
+        default="q4_k_m",
+        help="GGUF tensor encoding (default: q4_k_m)",
+    )
+    export.add_argument(
+        "--llama-cpp-dir",
+        help="llama.cpp checkout containing convert_hf_to_gguf.py",
+    )
+    export.add_argument(
+        "--python-executable",
+        help="Python used to run llama.cpp's converter (default: current Python)",
+    )
+    export.add_argument(
+        "--context-length",
+        type=int,
+        default=8192,
+        help="Ollama num_ctx value written to Modelfile (default: 8192)",
+    )
+    export.add_argument(
+        "--keep-intermediate",
+        action="store_true",
+        help="Keep the large F16 intermediate alongside a quantized GGUF",
+    )
+    export.add_argument(
+        "--keep-partial",
+        action="store_true",
+        help="Retain hidden conversion data when an export fails",
+    )
+    export.add_argument(
+        "--progress",
+        choices=("auto", "plain", "json", "off"),
+        default="auto",
+        help="Progress on stderr (default: auto)",
+    )
+    export.set_defaults(handler=command_export_gguf)
     return parser
 
 

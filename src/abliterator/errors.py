@@ -21,5 +21,9 @@ class QuantizationError(AbliteratorError):
     """Raised when a requested low-bit operation would be unsafe or unsupported."""
 
 
+class GgufExportError(AbliteratorError):
+    """Raised when a GGUF conversion cannot be verified or published safely."""
+
+
 class DatasetError(AbliteratorError):
     """Raised when a dataset no longer matches its registered schema."""

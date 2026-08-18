@@ -39,6 +39,7 @@ from .pipeline import (
     environment_receipt,
     save_ablated_checkpoint,
 )
+from .progress import ProgressCallback, WorkflowProgress
 from .quantization import dequantize_model_for_edit
 from .runtime import publish_directory_noreplace, require
 
@@ -58,6 +59,10 @@ class ObliterateConfig:
     direction_samples: int = 40
     ranking_datasets: tuple[str, ...] = ("jbb-cyber-benign", "jbb-cyber-harmful")
     ranking_samples: int = 10
+    truthfulness_datasets: tuple[str, ...] = ("truthfulness-smoke",)
+    truthfulness_samples: int = 20
+    max_truthfulness_drop: float = 0.05
+    max_hallucination_increase: float = 0.0
     seed: int = 42
     length_match: bool = True
     length_bin: int = 128
@@ -98,6 +103,20 @@ class ObliterateConfig:
             raise ConfigurationError("ranking_samples must be positive")
         if not self.ranking_datasets:
             raise ConfigurationError("ranking_datasets must not be empty")
+        if self.truthfulness_samples < 0:
+            raise ConfigurationError("truthfulness_samples must not be negative")
+        if self.truthfulness_samples > 0 and not self.truthfulness_datasets:
+            raise ConfigurationError("truthfulness_datasets must not be empty")
+        if not math.isfinite(self.max_truthfulness_drop) or not (
+            0.0 <= self.max_truthfulness_drop <= 1.0
+        ):
+            raise ConfigurationError("max_truthfulness_drop must be finite and between 0 and 1")
+        if not math.isfinite(self.max_hallucination_increase) or not (
+            0.0 <= self.max_hallucination_increase <= 1.0
+        ):
+            raise ConfigurationError(
+                "max_hallucination_increase must be finite and between 0 and 1"
+            )
         if self.length_bin < 16:
             raise ConfigurationError("length_bin must be at least 16")
         if self.candidate_count < 1:
@@ -370,6 +389,45 @@ def _validate_permanent_safety_result(
     }
 
 
+def validate_truthfulness_regression(
+    baseline: EvaluationReport,
+    permanent: EvaluationReport,
+    *,
+    max_truthfulness_drop: float,
+    max_hallucination_increase: float,
+) -> dict[str, Any]:
+    if baseline.truthfulness_accuracy is None or permanent.truthfulness_accuracy is None:
+        raise ConfigurationError("Truthfulness validation requires scored truthfulness rows")
+    if baseline.unknown_hallucination_rate is None or permanent.unknown_hallucination_rate is None:
+        raise ConfigurationError("Truthfulness validation requires unknowable trap rows")
+    truthfulness_drop = baseline.truthfulness_accuracy - permanent.truthfulness_accuracy
+    hallucination_increase = (
+        permanent.unknown_hallucination_rate - baseline.unknown_hallucination_rate
+    )
+    if truthfulness_drop > max_truthfulness_drop + 1e-12:
+        raise ConfigurationError(
+            "The permanently edited checkpoint reduced truthfulness accuracy by "
+            f"{truthfulness_drop:.6g}, above the allowed {max_truthfulness_drop:.6g}"
+        )
+    if hallucination_increase > max_hallucination_increase + 1e-12:
+        raise ConfigurationError(
+            "The permanently edited checkpoint increased unknowable-question hallucinations by "
+            f"{hallucination_increase:.6g}, above the allowed {max_hallucination_increase:.6g}"
+        )
+    return {
+        "passed": True,
+        "format": "abpro-truthfulness-regression-v1",
+        "baseline_truthfulness_accuracy": baseline.truthfulness_accuracy,
+        "permanent_truthfulness_accuracy": permanent.truthfulness_accuracy,
+        "truthfulness_drop": truthfulness_drop,
+        "max_truthfulness_drop": max_truthfulness_drop,
+        "baseline_unknown_hallucination_rate": baseline.unknown_hallucination_rate,
+        "permanent_unknown_hallucination_rate": permanent.unknown_hallucination_rate,
+        "unknown_hallucination_increase": hallucination_increase,
+        "max_hallucination_increase": max_hallucination_increase,
+    }
+
+
 def verify_reloaded_targets(
     adapter: Any,
     edit_manifest: dict[str, Any],
@@ -519,6 +577,10 @@ def obliteration_plan(
         "direction_samples": config.direction_samples,
         "ranking_datasets": list(config.ranking_datasets),
         "ranking_samples_per_dataset": config.ranking_samples,
+        "truthfulness_datasets": list(config.truthfulness_datasets),
+        "truthfulness_samples_per_dataset": config.truthfulness_samples,
+        "max_truthfulness_drop": config.max_truthfulness_drop,
+        "max_hallucination_increase": config.max_hallucination_increase,
         "candidate_layers": (
             config.candidate_layers
             if isinstance(config.candidate_layers, str)
@@ -820,6 +882,30 @@ def _prepare_ranking_records(config: ObliterateConfig) -> list[PromptRecord]:
     return records
 
 
+def _prepare_truthfulness_records(config: ObliterateConfig) -> list[PromptRecord]:
+    if config.truthfulness_samples == 0:
+        return []
+    records: list[PromptRecord] = []
+    for dataset_id in config.truthfulness_datasets:
+        spec = get_dataset_spec(dataset_id)
+        if not spec.use_for_eval:
+            raise DatasetError(f"{dataset_id} is not registered for evaluation")
+        records.extend(
+            load_dataset_records(
+                dataset_id,
+                limit=config.truthfulness_samples,
+                seed=config.seed,
+            )
+        )
+    if not records:
+        raise ConfigurationError("Truthfulness validation requires at least one record")
+    if not any(record.expected_behavior == "truthfulness" for record in records):
+        raise ConfigurationError("Truthfulness validation requires truthfulness records")
+    if not any(record.must_abstain for record in records):
+        raise ConfigurationError("Truthfulness validation requires unknowable trap records")
+    return records
+
+
 def inspect_and_smoke(adapter: Any, *, point: str = "resid_pre") -> dict[str, Any]:
     """Run structural inspection plus a real first/last-layer capture."""
     report = adapter.inspect()
@@ -1016,6 +1102,19 @@ def _sha256(path: Path) -> str:
 def _render_model_card(receipt: dict[str, Any]) -> str:
     selected = receipt["selection"]
     validation = receipt["post_export_validation"]
+    truthfulness = receipt.get("truthfulness_validation")
+    truthfulness_block = ""
+    if truthfulness is not None:
+        truthfulness_block = (
+            f"- Truthfulness accuracy before: "
+            f"`{truthfulness['baseline']['truthfulness_accuracy']}`\n"
+            f"- Truthfulness accuracy after: "
+            f"`{truthfulness['modified']['truthfulness_accuracy']}`\n"
+            f"- Unknown-question hallucination rate before: "
+            f"`{truthfulness['baseline']['unknown_hallucination_rate']}`\n"
+            f"- Unknown-question hallucination rate after: "
+            f"`{truthfulness['modified']['unknown_hallucination_rate']}`\n"
+        )
     selection_mode = str(receipt["plan"]["objective"])
     return (
         "---\n"
@@ -1040,9 +1139,11 @@ def _render_model_card(receipt: dict[str, Any]) -> str:
         f"- Benign false-refusal rate before: "
         f"`{validation['baseline']['false_refusal_rate']}`\n"
         f"- Benign false-refusal rate after: "
-        f"`{validation['modified']['false_refusal_rate']}`\n\n"
-        "See `abpro/run.json`, `abpro/ranking.json`, and `abpro/post-export-validation.json` "
-        "for the complete text-free provenance and evaluation receipts.\n"
+        f"`{validation['modified']['false_refusal_rate']}`\n"
+        f"{truthfulness_block}\n"
+        "See `abpro/run.json`, `abpro/ranking.json`, `abpro/post-export-validation.json`, "
+        "and `abpro/truthfulness-validation.json` when present for the complete text-free "
+        "provenance and evaluation receipts.\n"
     )
 
 
@@ -1059,11 +1160,17 @@ def run_obliteration_workflow(
     model: ModelLoadConfig,
     architecture: ArchitectureSpec,
     config: ObliterateConfig,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Run the workflow while guaranteeing model and accelerator cleanup on every exit."""
     resources = _WorkflowResources()
+    tracker = WorkflowProgress(progress)
     try:
-        return _execute_obliteration_workflow(model, architecture, config, resources)
+        return _execute_obliteration_workflow(model, architecture, config, resources, tracker)
+    except Exception as exc:
+        tracker.fail(str(exc))
+        raise
     finally:
         resources.adapter = None
         resources.verifier = None
@@ -1079,17 +1186,37 @@ def _execute_obliteration_workflow(
     architecture: ArchitectureSpec,
     config: ObliterateConfig,
     resources: _WorkflowResources,
+    progress: WorkflowProgress,
 ) -> dict[str, Any]:
     """Discover, rank, permanently edit, reload-verify, and atomically publish a fork."""
+    progress.start("preflight", "Validating the plan and output path")
     plan = obliteration_plan(model, config, architecture)
     output = Path(plan["output"])
     output.parent.mkdir(parents=True, exist_ok=True)
+    progress.complete(
+        "preflight",
+        "Plan validated; output is reserved for a new fork",
+        details={"output": str(output), "objective": config.objective},
+    )
+
+    progress.start("cohorts", "Loading and validating the fixed prompt cohorts")
     target_records: list[PromptRecord] | None = None
     contrast_records: list[PromptRecord] | None = None
     direction_behavior_filter: dict[str, Any] | None = None
     if config.directions is None:
         target_records, contrast_records = _prepare_direction_records(config)
     ranking_records = _prepare_ranking_records(config)
+    truthfulness_records = _prepare_truthfulness_records(config)
+    progress.complete(
+        "cohorts",
+        "Prompt cohorts are ready",
+        details={
+            "target_candidates": 0 if target_records is None else len(target_records),
+            "contrast_candidates": 0 if contrast_records is None else len(contrast_records),
+            "ranking_prompts": len(ranking_records),
+            "truthfulness_prompts": len(truthfulness_records),
+        },
+    )
 
     created_artifact = config.directions is None
     artifact_path = output.parent / (
@@ -1100,6 +1227,7 @@ def _execute_obliteration_workflow(
         provided_artifact = Path(config.directions).expanduser().resolve()  # type: ignore[arg-type]
         _copy_file_new(provided_artifact, artifact_path)
 
+    progress.start("source", "Loading the source model and checking its architecture")
     source_receipt_at_start = local_checkpoint_receipt(model.model)
     resources.adapter = HuggingFaceAdapter.from_pretrained(model, architecture=architecture)
     detected_source_quantization = getattr(
@@ -1134,7 +1262,25 @@ def _execute_obliteration_workflow(
     source_receipt_after_load = local_checkpoint_receipt(model.model)
     if source_receipt_at_start != source_receipt_after_load:
         raise ConfigurationError("The local source checkpoint changed while it was being loaded")
+    progress.complete(
+        "source",
+        "Source model loaded and forward-capture smoke test passed",
+        details={
+            "model_type": architecture_report.model_type,
+            "layers": architecture_report.layer_count,
+            "hidden_size": architecture_report.hidden_size,
+            "checkpoint_quantization": detected_source_quantization,
+        },
+    )
 
+    progress.start(
+        "directions",
+        (
+            "Discovering activation directions from behavior-confirmed cohorts"
+            if created_artifact
+            else "Loading and validating the supplied direction artifact"
+        ),
+    )
     if created_artifact:
         if target_records is None or contrast_records is None:
             raise RuntimeError("Direction cohorts were not prepared")
@@ -1210,6 +1356,14 @@ def _execute_obliteration_workflow(
     else:
         artifact = load_direction_artifact(artifact_path)
         artifact_sha256 = _sha256(artifact_path)
+    progress.complete(
+        "directions",
+        f"Direction artifact is ready with {len(artifact.directions)} candidate vectors",
+        details={
+            "candidate_count": len(artifact.directions),
+            "artifact_sha256": artifact_sha256,
+        },
+    )
 
     if config.direction_key is not None:
         if config.direction_key not in artifact.directions:
@@ -1256,6 +1410,11 @@ def _execute_obliteration_workflow(
         enable_thinking=model.enable_thinking,
         allow_mismatch=False,
         loaded_local_receipt=source_receipt_after_load,
+    )
+    progress.start(
+        "ranking",
+        f"Testing {len(direction_keys)} candidate direction(s) with reversible hooks",
+        details={"direction_keys": direction_keys},
     )
     try:
         ranking, baseline, modified_reports = rank_direction_candidates(
@@ -1327,9 +1486,41 @@ def _execute_obliteration_workflow(
         "raw_prompts": model.raw_prompts,
         "enable_thinking": model.enable_thinking,
     }
+    progress.complete(
+        "ranking",
+        f"Selected {selected_key} from reversible measurements",
+        details={
+            "selected_direction": selected_key,
+            "selected_direction_keys": selected_keys,
+            "candidate_count": len(ranking["candidates"]),
+            "warnings": selection_warnings,
+        },
+    )
+
+    progress.start("baseline-quality", "Measuring the source model's quality baseline")
+    truthfulness_baseline: EvaluationReport | None = None
+    if truthfulness_records:
+        truthfulness_baseline = evaluate_prompts(
+            resources.adapter,
+            truthfulness_records,
+            batch_size=config.batch_size,
+            max_new_tokens=config.max_new_tokens,
+            max_length=config.max_length,
+        )
+        progress.complete(
+            "baseline-quality",
+            "Source truthfulness and abstention baseline measured",
+            details={
+                "truthfulness_accuracy": truthfulness_baseline.truthfulness_accuracy,
+                "unknown_hallucination_rate": (truthfulness_baseline.unknown_hallucination_rate),
+            },
+        )
+    else:
+        progress.skip("baseline-quality", "Truthfulness regression check is disabled")
 
     staging = output.parent / f".{output.name}.workflow-{uuid.uuid4().hex[:12]}"
     try:
+        progress.start("edit", "Projecting the selected subspace and saving a staged checkpoint")
         manifest = save_ablated_checkpoint(
             resources.adapter,
             selected_direction,
@@ -1354,6 +1545,15 @@ def _execute_obliteration_workflow(
         )
         resources.adapter = None
         _release_accelerator_memory()
+        progress.complete(
+            "edit",
+            f"Staged checkpoint saved with {len(manifest['targets'])} edited targets",
+            details={
+                "target_count": len(manifest["targets"]),
+                "layers": manifest["layers"],
+                "kinds": manifest["kinds"],
+            },
+        )
 
         evidence = staging / "abpro"
         evidence.mkdir()
@@ -1376,6 +1576,7 @@ def _execute_obliteration_workflow(
             quantization=QuantizationConfig(),
             local_files_only=True,
         )
+        progress.start("reload", "Reloading the staged fork and verifying its saved weights")
         resources.verifier = HuggingFaceAdapter.from_pretrained(
             verify_model,
             architecture=architecture,
@@ -1387,6 +1588,16 @@ def _execute_obliteration_workflow(
             chunk_columns=config.chunk_columns,
         )
         reload_smoke = inspect_and_smoke(resources.verifier, point=config.point)
+        progress.complete(
+            "reload",
+            "Reloaded weights, architecture, leakage, and forward capture all match",
+            details={
+                "target_count": target_verification["target_count"],
+                "max_direction_leakage": target_verification["max_direction_leakage"],
+            },
+        )
+
+        progress.start("validation", "Replaying behavior and quality checks on the saved fork")
         permanent = evaluate_prompts(
             resources.verifier,
             ranking_records,
@@ -1411,9 +1622,56 @@ def _execute_obliteration_workflow(
         post_export_validation["cohort"] = cohort_receipt(ranking_records)
         post_export_validation["objective_validation"] = permanent_safety
         post_export_validation["guard"] = permanent_safety
+        truthfulness_validation: dict[str, Any] | None = None
+        if truthfulness_records:
+            if truthfulness_baseline is None:
+                raise RuntimeError("Truthfulness baseline was not evaluated")
+            truthfulness_modified = evaluate_prompts(
+                resources.verifier,
+                truthfulness_records,
+                batch_size=config.batch_size,
+                max_new_tokens=config.max_new_tokens,
+                max_length=config.max_length,
+            )
+            truthfulness_validation = compare_reports(
+                truthfulness_baseline,
+                truthfulness_modified,
+            )
+            truthfulness_validation["baseline"]["results"] = [
+                asdict(row) for row in truthfulness_baseline.results
+            ]
+            truthfulness_validation["modified"]["results"] = [
+                asdict(row) for row in truthfulness_modified.results
+            ]
+            truthfulness_validation["cohort"] = cohort_receipt(truthfulness_records)
+            truthfulness_validation["regression_guard"] = validate_truthfulness_regression(
+                truthfulness_baseline,
+                truthfulness_modified,
+                max_truthfulness_drop=config.max_truthfulness_drop,
+                max_hallucination_increase=config.max_hallucination_increase,
+            )
+        progress.complete(
+            "validation",
+            "Permanent behavior replay and quality regression checks passed",
+            details={
+                "deny_refusal_rate": permanent.deny_refusal_rate,
+                "false_refusal_rate": permanent.false_refusal_rate,
+                "truthfulness_accuracy": (
+                    None
+                    if truthfulness_validation is None
+                    else truthfulness_validation["modified"]["truthfulness_accuracy"]
+                ),
+                "unknown_hallucination_rate": (
+                    None
+                    if truthfulness_validation is None
+                    else truthfulness_validation["modified"]["unknown_hallucination_rate"]
+                ),
+            },
+        )
         resources.verifier = None
         _release_accelerator_memory()
 
+        progress.start("publish", "Writing receipts and atomically publishing the verified fork")
         source_receipt_before = source_receipt_at_start
         source_receipt_after = local_checkpoint_receipt(model.model)
         if source_receipt_after != source_receipt_before:
@@ -1464,10 +1722,13 @@ def _execute_obliteration_workflow(
                 "forward_capture": reload_smoke["forward_capture"],
             },
             "post_export_validation": post_export_validation,
+            "truthfulness_validation": truthfulness_validation,
             "provenance_warnings": provenance_warnings,
             "environment": environment_receipt(),
         }
         _write_json_new(evidence / "post-export-validation.json", post_export_validation)
+        if truthfulness_validation is not None:
+            _write_json_new(evidence / "truthfulness-validation.json", truthfulness_validation)
         _write_json_new(evidence / "run.json", receipt)
         if not (staging / "README.md").exists():
             (staging / "README.md").write_text(_render_model_card(receipt), encoding="utf-8")
@@ -1476,6 +1737,11 @@ def _execute_obliteration_workflow(
             shutil.copy2(source_license, staging / "LICENSE")
         publish_directory_noreplace(staging, output)
         resources.published = True
+        progress.complete(
+            "publish",
+            "Verified fork published without overwriting another checkpoint",
+            details={"output": str(output), "receipt": "abpro/run.json"},
+        )
     except Exception as exc:
         raise RuntimeError(
             "One-command obliteration failed before final publication. "
@@ -1494,4 +1760,5 @@ def _execute_obliteration_workflow(
             "delta": post_export_validation["delta"],
         },
         "receipt": str(output / "abpro" / "run.json"),
+        "stage_timings_seconds": progress.timings,
     }

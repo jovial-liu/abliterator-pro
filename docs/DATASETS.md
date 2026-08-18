@@ -1,7 +1,7 @@
 # Dataset registry
 
-Prompt content is not bundled. The registry stores source IDs, immutable revisions, licenses,
-roles, and—in the case of official raw files—SHA-256 checksums.
+Most prompt content is not bundled. The registry stores source IDs, immutable revisions, licenses,
+roles, and SHA-256 checksums for official raw files and packaged smoke tests.
 
 ## Direction cohorts
 
@@ -28,6 +28,10 @@ Paper: <https://arxiv.org/abs/2404.13161>
   lower false-refusal score cannot hide lost harmful refusal behavior.
 - `wmdp-cyber`: scored multiple-choice cyber knowledge preservation; MIT. Final evaluation only,
   never direction fitting or ranking.
+- `truthfulness-smoke`: packaged MIT factuality and unknowable-question regression prompts. This
+  is used by the one-command workflow to detect obvious post-training discipline regressions such
+  as inventing answers to impossible/private questions. It is a smoke test, not a complete
+  hallucination benchmark.
 - `ifeval`: pinned Apache-2.0 prompt-only source. The registry intentionally marks it unscored
   because this package does not retain/run IFEval’s constraint checker.
 - `wildguard-test`: pinned prompt-only source under ODC-By plus gated AI2 responsible-use terms.
